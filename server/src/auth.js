@@ -50,8 +50,11 @@ const authPlugin = fp(async function (fastify) {
     const token = fastify.jwt.sign({ sub: user.id, email: user.email, isAdmin: user.isAdmin }, { expiresIn: '7d' });
     return { token };
   });
-
-  await bootstrapAdmin(fastify);
 });
 
-module.exports = { authPlugin };
+// 在模块末尾调用bootstrapAdmin函数
+async function initAuth(fastify) {
+  await bootstrapAdmin(fastify);
+}
+
+module.exports = { authPlugin, initAuth };

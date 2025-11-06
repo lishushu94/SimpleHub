@@ -7,6 +7,7 @@ const { CONFIG } = require('./config');
 const { routes } = require('./routes');
 const { scheduleAll, scheduleGlobalTask } = require('./scheduler');
 const { prisma } = require('./db');
+const { initAuth } = require('./auth');
 
 async function buildServer() {
   const fastify = Fastify({ logger: true });
@@ -21,8 +22,8 @@ async function buildServer() {
   console.log('[Static Files] __dirname:', __dirname);
   
   if (fs.existsSync(staticRoot)) {
-    await fastify.register(fastifyStatic, { 
-      root: staticRoot, 
+    await fastify.register(require('@fastify/static'), {
+      root: staticRoot,
       prefix: '/',
       decorateReply: false // 避免冲突
     });
@@ -41,6 +42,9 @@ async function buildServer() {
 
   await fastify.register(routes);
 
+  // 初始化认证模块
+  await initAuth(fastify);
+
   if (fs.existsSync(staticRoot)) {
     fastify.setNotFoundHandler((req, reply) => {
       // For SPA, serve index.html for non-API routes
@@ -53,6 +57,9 @@ async function buildServer() {
       reply.code(404).send({ error: 'Not found' });
     });
   }
+
+  // 初始化认证模块
+  await initAuth(fastify);
 
   await scheduleAll(fastify);
   
@@ -77,5 +84,3 @@ buildServer()
     console.error(err);
     process.exit(1);
   });
-
-module.exports = { buildServer };

@@ -346,7 +346,7 @@ async function routes(fastify) {
   }, async (request, reply) => {
     const { id } = request.params;
     const data = {};
-    const { 
+    const {
       name, baseUrl, apiKey, apiType, userId, scheduleCron, timezone, pinned, excludeFromBatch,
       categoryId,
       billingUrl, billingAuthType, billingAuthValue, billingLimitField, billingUsageField, unlimitedQuota,
@@ -361,18 +361,19 @@ async function routes(fastify) {
       if (userId !== undefined) data.userId = userId;
       if (scheduleCron !== undefined) data.scheduleCron = scheduleCron;
       if (timezone) data.timezone = timezone;
-      if (pinned !== undefined) data.pinned = pinned;
-      if (excludeFromBatch !== undefined) data.excludeFromBatch = excludeFromBatch;
+      // 确保布尔字段总是被处理，即使值为false
+      if ('pinned' in request.body) data.pinned = Boolean(pinned);
+      if ('excludeFromBatch' in request.body) data.excludeFromBatch = Boolean(excludeFromBatch);
+      if ('unlimitedQuota' in request.body) data.unlimitedQuota = Boolean(unlimitedQuota);
+      if ('enableCheckIn' in request.body) data.enableCheckIn = Boolean(enableCheckIn);
       if (categoryId !== undefined) data.categoryId = categoryId || null;
       if (billingUrl !== undefined) data.billingUrl = billingUrl;
-      if (billingAuthType) data.billingAuthType = billingAuthType;
+      if (billingAuthType !== undefined) data.billingAuthType = billingAuthType;
       if (billingAuthValue !== undefined) {
         data.billingAuthValue = billingAuthValue ? encrypt(billingAuthValue) : null;
       }
       if (billingLimitField !== undefined) data.billingLimitField = billingLimitField;
       if (billingUsageField !== undefined) data.billingUsageField = billingUsageField;
-      if (unlimitedQuota !== undefined) data.unlimitedQuota = unlimitedQuota;
-      if (enableCheckIn !== undefined) data.enableCheckIn = enableCheckIn;
       if (checkInMode) data.checkInMode = checkInMode;
       if (apiKey) data.apiKeyEnc = encrypt(apiKey);
       if (extralink !== undefined) data.extralink = extralink;
@@ -381,7 +382,17 @@ async function routes(fastify) {
       fastify.log.info({ updateData: data }, 'Updating site');
       
       const site = await prisma.site.update({ where: { id }, data });
-      onSiteUpdated(site, fastify);
+      
+      // 如果站点的分类或计划信息有变化，重新调度
+      const { scheduleAll } = require('./scheduler');
+      if (data.categoryId !== undefined || data.scheduleCron !== undefined) {
+        await scheduleAll(fastify); // 重新调度所有任务
+      } else {
+        // 否则只更新当前站点的调度
+        const { onSiteUpdated } = require('./scheduler');
+        onSiteUpdated(site, fastify);
+      }
+      
       const { apiKeyEnc: _, ...rest } = site;
       return rest;
     } catch (error) {
@@ -1237,6 +1248,11 @@ async function routes(fastify) {
       const category = await prisma.category.create({
         data: { name, scheduleCron, timezone }
       });
+      
+      // 调度新的分类定时任务
+      const { scheduleCategory } = require('./scheduler');
+      await scheduleCategory(category, fastify);
+      
       return category;
     } catch (e) {
       if (e.code === 'P2002') {
@@ -1269,6 +1285,11 @@ async function routes(fastify) {
     
     try {
       const category = await prisma.category.update({ where: { id }, data });
+      
+      // 更新分类的定时任务
+      const { scheduleCategory } = require('./scheduler');
+      await scheduleCategory(category, fastify);
+      
       return category;
     } catch (e) {
       if (e.code === 'P2002') {
@@ -1287,6 +1308,14 @@ async function routes(fastify) {
     const { id } = request.params;
     
     try {
+      // 停止该分类的定时任务
+      const { categoryJobs } = require('./scheduler');
+      const jobKey = `cat_${id}`;
+      if (categoryJobs && categoryJobs.has(jobKey)) {
+        categoryJobs.get(jobKey).stop();
+        categoryJobs.delete(jobKey);
+      }
+      
       // 将该分类下的所有站点的categoryId设为null（归入未分类）
       await prisma.site.updateMany({
         where: { categoryId: id },

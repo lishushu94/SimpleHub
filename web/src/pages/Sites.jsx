@@ -476,7 +476,13 @@ export default function Sites() {
       delete v.cnHour; delete v.cnMinute
       if (!v.apiType) v.apiType = 'other'
       if (v.enableCheckIn && !v.checkInMode) v.checkInMode = 'both'
-
+      
+      // 确保布尔字段总是被包含在请求中，使用实际值或默认值false
+      v.pinned = v.pinned === true;
+      v.excludeFromBatch = v.excludeFromBatch === true;
+      v.unlimitedQuota = v.unlimitedQuota === true;
+      v.enableCheckIn = v.enableCheckIn === true;
+      
       const res = await fetch('/api/sites', { method: 'POST', headers: authHeaders(true), body: JSON.stringify(v) })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -509,16 +515,16 @@ export default function Sites() {
       userId: site.userId || '',
       cnHour,
       cnMinute,
-      pinned: site.pinned || false,
-      excludeFromBatch: site.excludeFromBatch || false,
+      pinned: site.pinned !== undefined ? site.pinned : false,
+      excludeFromBatch: site.excludeFromBatch !== undefined ? site.excludeFromBatch : false,
       categoryId: site.categoryId || null,
-      unlimitedQuota: site.unlimitedQuota || false,
+      unlimitedQuota: site.unlimitedQuota !== undefined ? site.unlimitedQuota : false,
       billingUrl: site.billingUrl || '',
       billingAuthType: site.billingAuthType || 'token',
       billingAuthValue: '',
       billingLimitField: site.billingLimitField || '',
       billingUsageField: site.billingUsageField || '',
-      enableCheckIn: site.enableCheckIn || false,
+      enableCheckIn: site.enableCheckIn !== undefined ? site.enableCheckIn : false,
       checkInMode: site.checkInMode || 'both',
       extralink: site.extralink || '',
       remark: site.remark || ''
@@ -530,21 +536,23 @@ export default function Sites() {
     try {
       const v = await form.validateFields()
 
+      // 构建更新数据，包含所有字段，确保布尔值被正确处理
       const updateData = {
         name: v.name,
         baseUrl: v.baseUrl,
         apiType: v.apiType || 'other',
         userId: v.userId || null,
-        pinned: v.pinned || false,
-        excludeFromBatch: v.excludeFromBatch || false,
+        // 布尔字段：使用严格的布尔转换，确保false值也被正确发送
+        pinned: v.pinned === true,
+        excludeFromBatch: v.excludeFromBatch === true,
+        unlimitedQuota: v.unlimitedQuota === true,
         categoryId: v.categoryId || null,
-        unlimitedQuota: v.unlimitedQuota || false,
         billingUrl: v.billingUrl || null,
         billingAuthType: v.billingAuthType || 'token',
         billingAuthValue: v.billingAuthValue || null,
         billingLimitField: v.billingLimitField || null,
         billingUsageField: v.billingUsageField || null,
-        enableCheckIn: v.enableCheckIn || false,
+        enableCheckIn: v.enableCheckIn === true,
         extralink: v.extralink || null,
         remark: v.remark || null
       }
@@ -562,7 +570,7 @@ export default function Sites() {
       if (v.cnHour !== undefined && v.cnMinute !== undefined && v.cnHour !== null && v.cnMinute !== null) {
         const h = Math.max(0, Math.min(23, Number(v.cnHour)))
         const m = Math.max(0, Math.min(59, Number(v.cnMinute)))
-        updateData.scheduleCron = `${m} ${h} * * *`
+        updateData.scheduleCron = `${m} ${h} * *`
         updateData.timezone = 'Asia/Shanghai'
       } else {
         updateData.scheduleCron = null
@@ -2110,45 +2118,51 @@ export default function Sites() {
             </Form.Item>
 
             <div style={{ display: 'flex', gap: 24, marginBottom: 24 }}>
-              <Form.Item
-                name="pinned"
-                valuePropName="checked"
-                style={{ marginBottom: 0, flex: 1 }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ marginBottom: 8 }}>
                   <span style={{ fontSize: 14, fontWeight: 500 }}>置顶设置</span>
+                </div>
+                <Form.Item
+                  name="pinned"
+                  valuePropName="checked"
+                  style={{ marginBottom: 0 }}
+                >
                   <Switch
                     checkedChildren="已置顶"
                     unCheckedChildren="未置顶"
                   />
-                </div>
-              </Form.Item>
-              <Form.Item
-                name="excludeFromBatch"
-                valuePropName="checked"
-                style={{ marginBottom: 0, flex: 1 }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                </Form.Item>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ marginBottom: 8 }}>
                   <span style={{ fontSize: 14, fontWeight: 500 }}>一键检测</span>
+                </div>
+                <Form.Item
+                  name="excludeFromBatch"
+                  valuePropName="checked"
+                  style={{ marginBottom: 0 }}
+                >
                   <Switch
                     checkedChildren="排除"
                     unCheckedChildren="参与"
                   />
-                </div>
-              </Form.Item>
-              <Form.Item
-                name="unlimitedQuota"
-                valuePropName="checked"
-                style={{ marginBottom: 0, flex: 1 }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                </Form.Item>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ marginBottom: 8 }}>
                   <span style={{ fontSize: 14, fontWeight: 500 }}>余额类型</span>
+                </div>
+                <Form.Item
+                  name="unlimitedQuota"
+                  valuePropName="checked"
+                  style={{ marginBottom: 0 }}
+                >
                   <Switch
                     checkedChildren="无限余额"
                     unCheckedChildren="普通余额"
                   />
-                </div>
-              </Form.Item>
+                </Form.Item>
+              </div>
             </div>
             
             {/* 签到配置 - 仅Veloera类型显示 */}
@@ -2167,6 +2181,7 @@ export default function Sites() {
                       label={<span style={{ fontSize: 15, fontWeight: 500 }}>启用自动签到</span>}
                       valuePropName="checked"
                       extra="仅Veloera类型支持自动签到功能"
+                      initialValue={false}
                     >
                       <Switch
                         checkedChildren="已启用"

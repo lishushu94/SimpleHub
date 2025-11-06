@@ -4,6 +4,7 @@ const { checkSite } = require('./run');
 const { sendAggregatedNotification } = require('./notifier');
 
 const jobs = new Map();
+const categoryJobs = new Map();  // 用于存储分类定时任务
 const DEFAULT_CRON = '0 9 * * *';
 let globalScheduleJob = null;
 
@@ -44,7 +45,7 @@ async function scheduleSite(site, fastify) {
     } catch (e) {
       fastify?.log?.warn({ siteId: site.id, name: site.name, err: e.message }, 'Individual scheduled check failed');
     }
-  }, { 
+  }, {
     timezone: site.timezone || 'UTC',
     scheduled: true  // 确保任务被启动
   });
@@ -61,6 +62,9 @@ async function scheduleAll(fastify) {
   for (const s of sites) {
     await scheduleSite(s, fastify);
   }
+  
+  // 也要为所有分类调度定时任务
+  await scheduleAllCategories(fastify);
 }
 
 function stopAllIndividualJobs(fastify) {
@@ -75,6 +79,109 @@ function stopAllIndividualJobs(fastify) {
 
 function onSiteUpdated(site, fastify) {
   scheduleSite(site, fastify);
+}
+
+// 为分类调度定时任务
+async function scheduleCategory(category, fastify) {
+  const key = `cat_${category.id}`;
+  
+  // 停止现有任务
+  if (categoryJobs.has(key)) {
+    categoryJobs.get(key).stop();
+    categoryJobs.delete(key);
+ }
+  
+  // 只为有定时配置的分类创建任务
+  if (!category.scheduleCron || !category.scheduleCron.trim()) {
+    fastify?.log?.info({ categoryId: category.id, name: category.name }, 'Category has no custom schedule');
+    return;
+  }
+  
+  const cronExp = category.scheduleCron;
+  const job = cron.schedule(cronExp, async () => {
+    try {
+      // 重新从数据库获取最新的分类信息
+      const latestCategory = await prisma.category.findUnique({
+        where: { id: category.id },
+        include: { sites: true }
+      });
+      
+      if (!latestCategory) {
+        fastify?.log?.warn({ categoryId: category.id }, 'Category not found, skipping scheduled check');
+        return;
+      }
+      
+      // 获取该分类下所有需要检测的站点（非置顶）
+      // excludeFromBatch 只影响手动一键检测，不影响定时检测
+      const sitesToCheck = latestCategory.sites.filter(site =>
+        !site.pinned
+      );
+      
+      if (sitesToCheck.length === 0) {
+        fastify?.log?.info({ categoryId: latestCategory.id, name: latestCategory.name }, 'No sites to check in category');
+        return;
+      }
+      
+      fastify?.log?.info({
+        categoryId: latestCategory.id,
+        categoryName: latestCategory.name,
+        siteCount: sitesToCheck.length
+      }, 'Category scheduled check started');
+      
+      // 依次检测每个站点（使用5秒间隔）
+      for (let i = 0; i < sitesToCheck.length; i++) {
+        const site = sitesToCheck[i];
+        try {
+          await checkSite(site, fastify, { skipNotification: false, isManual: false }); // 分类检测也发送单独通知
+          fastify?.log?.info({ siteId: site.id, siteName: site.name }, `Site checked in category task`);
+        } catch (e) {
+          fastify?.log?.error({
+            siteId: site.id,
+            siteName: site.name,
+            error: e.message
+          }, 'Site check failed in category task');
+        }
+        
+        // 如果不是最后一个站点，等待5秒
+        if (i < sitesToCheck.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+      }
+      
+      fastify?.log?.info({
+        categoryId: latestCategory.id,
+        categoryName: latestCategory.name
+      }, 'Category scheduled check completed');
+    } catch (e) {
+      fastify?.log?.error({
+        categoryId: category.id,
+        categoryName: category.name,
+        error: e.message
+      }, 'Category scheduled check failed');
+    }
+  }, {
+    timezone: category.timezone || 'UTC',
+    scheduled: true  // 确保任务被启动
+  });
+  
+  // 显式启动任务
+  job.start();
+  
+  categoryJobs.set(key, job);
+  fastify?.log?.info({
+    categoryId: category.id,
+    categoryName: category.name,
+    cronExp,
+    timezone: category.timezone
+  }, 'Category schedule task created and started');
+}
+
+// 为所有分类调度定时任务
+async function scheduleAllCategories(fastify) {
+  const categories = await prisma.category.findMany({ include: { sites: true } });
+  for (const category of categories) {
+    await scheduleCategory(category, fastify);
+  }
 }
 
 // 全局定时任务：按配置的时间检测所有没有单独定时配置的站点
@@ -129,9 +236,10 @@ async function scheduleGlobalTask(config, fastify) {
       const allSites = await prisma.site.findMany();
       
       // 根据最新的 overrideIndividual 决定是否覆盖单独配置
-      const sites = latestConfig.overrideIndividual 
-        ? allSites  // 覆盖模式：检测所有站点
-        : allSites.filter(s => !s.scheduleCron || !s.scheduleCron.trim()); // 只检测没有单独配置的站点
+      // 注意：excludeFromBatch 只影响手动一键检测，不影响定时检测
+      const sites = latestConfig.overrideIndividual
+        ? allSites  // 覆盖模式：检测所有站点（包括 excludeFromBatch=true 的站点）
+        : allSites.filter(s => !s.scheduleCron || !s.scheduleCron.trim()); // 只检测没有单独配置的站点（包括 excludeFromBatch=true 的站点）
       
       fastify?.log?.info({ 
         totalSites: allSites.length, 
@@ -205,7 +313,7 @@ async function scheduleGlobalTask(config, fastify) {
         
         // 等待间隔时间（除了最后一个站点），使用最新的interval配置
         if (i < sites.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, latestConfig.interval * 1000));
+          await new Promise(resolve => setTimeout(resolve, config.interval * 1000));
         }
       }
       
@@ -230,9 +338,9 @@ async function scheduleGlobalTask(config, fastify) {
       if (sitesWithChanges.length > 0 || failedSites.length > 0) {
         try {
           console.log(`[SCHEDULER] 准备发送聚合邮件通知...`);
-          fastify?.log?.info({ 
+          fastify?.log?.info({
             sitesWithChangesCount: sitesWithChanges.length,
-            failedCount: failedSites.length 
+            failedCount: failedSites.length
           }, 'Sending aggregated notification');
           await sendAggregatedNotification(sitesWithChanges, fastify, failedSites);
           console.log(`[SCHEDULER] ✅ 邮件发送完成`);
@@ -256,15 +364,15 @@ async function scheduleGlobalTask(config, fastify) {
     } catch (e) {
       fastify?.log?.error({ err: e.message }, 'Global schedule task error');
     }
-  }, { 
-    timezone,
+  }, {
+    timezone: timezone,
     scheduled: true  // 确保任务被启动
   });
   
   // 显式启动全局任务
   globalScheduleJob.start();
   
-  fastify?.log?.info({ cronExp, timezone }, 'Global schedule task created and started');
+  fastify?.log?.info({ cronExp: cronExp, timezone: timezone }, 'Global schedule task created and started');
 }
 
-module.exports = { scheduleAll, onSiteUpdated, scheduleGlobalTask };
+module.exports = { scheduleAll, onSiteUpdated, scheduleGlobalTask, scheduleCategory, scheduleAllCategories };
